@@ -441,7 +441,8 @@ client.on('interactionCreate', async interaction => {
             const isOwner = isXywez || (member && member.roles.cache.some(r => r.name.toLowerCase().includes('owner')));
             if (!isOwner) return interaction.reply({ content: '❌ Réservé aux Owners+.', ephemeral: true });
             const ipToLook = interaction.options.getString('ip');
-            await interaction.deferReply({ ephemeral: true });
+            // Répondre immédiatement pour éviter le timeout 3s
+            await interaction.reply({ content: '🔍 Analyse de l IP en cours...', ephemeral: true });
             const geo = await getGeoIP(ipToLook);
             await interaction.editReply({
                 embeds: [new EmbedBuilder()
@@ -463,7 +464,8 @@ client.on('interactionCreate', async interaction => {
             if (!isXywez) return interaction.reply({ content: '❌ Réservé à Xywez uniquement.', ephemeral: true });
             const channel = interaction.channel;
             if (!channel) return interaction.reply({ content: '❌ Salon introuvable.', ephemeral: true });
-            await interaction.deferReply({ ephemeral: true });
+            // Répondre immédiatement pour éviter le timeout 3s
+            await interaction.reply({ content: '💣 Nuke en cours...', ephemeral: true });
             let deleted = 0;
             while (true) {
                 const msgs = await channel.messages.fetch({ limit: 100 });
@@ -475,7 +477,7 @@ client.on('interactionCreate', async interaction => {
                 if (deletable.size < 100) break;
             }
             addBotLog(`💣 Nuke par ${user.tag}: ${deleted} messages supprimés`);
-            await interaction.editReply({ content: `✅ ${deleted} messages supprimés.` });
+            await interaction.editReply({ content: `✅ ${deleted} messages supprimés.` }).catch(() => {});
         }
 
         else if (commandName === 'ban') {
@@ -548,20 +550,33 @@ client.on('interactionCreate', async interaction => {
 
         else if (commandName === 'setup') {
             if (!isXywez) return interaction.reply({ content: '❌ Réservé aux Owners.', ephemeral: true });
-            await interaction.deferReply({ ephemeral: true });
-            const guild = interaction.guild;
-            addBotLog(`⚙️ Setup lancé par ${user.tag}`);
-            await interaction.editReply({ content: '✅ Setup en cours... (voir logs)' });
+            // RÉPONDRE IMMÉDIATEMENT - timeout Discord = 3 secondes max !
+            addBotLog('⚙️ Setup lancé par ' + user.tag);
+            // Répondre EN PREMIER - Discord expire l'interaction après 3 secondes
+            await interaction.reply({
+                embeds: [new EmbedBuilder()
+                    .setColor('#f59e0b')
+                    .setTitle('⚙️ Setup FTY Club Pro - En cours...')
+                    .setDescription('⏳ Création des rôles, catégories et salons...\nPatiente 20-30 secondes.')
+                    .setFooter({ text: 'FTY Club Pro - Auto Setup' })
+                    .setTimestamp()],
+                ephemeral: true
+            });
+            // Travail en arrière-plan - pas de await, pas de timeout
+            setImmediate(() => runFullSetup(interaction.guild, interaction));
         }
     } catch (err) {
+        // Unknown interaction = interaction expirée (>3s) ou déjà répondue → ignorer silencieusement
+        if (!err.message || err.message.includes('Unknown interaction') || err.message.includes('already been acknowledged')) {
+            return;
+        }
         console.error(`❌ Erreur commande ${commandName}:`, err.message);
+        // Essayer de répondre à l'erreur sans crasher
         try {
-            if (interaction.deferred) {
-                await interaction.editReply({ content: '❌ Une erreur est survenue.' });
-            } else if (!interaction.replied) {
-                await interaction.reply({ content: '❌ Une erreur est survenue.', ephemeral: true });
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ content: `❌ Erreur: ${err.message}`, ephemeral: true });
             }
-        } catch (e) {}
+        } catch (_) {}
     }
 });
 
@@ -590,6 +605,156 @@ client.on('messageCreate', async message => {
         }
     }
 });
+
+// ============================================================
+// ===         SETUP COMPLET DU SERVEUR DISCORD            ===
+// ============================================================
+async function runFullSetup(guild, interaction) {
+    const results = [];
+    const log = msg => { addBotLog('⚙️ ' + msg); results.push(msg); };
+
+    try {
+        // ===== RÔLES =====
+        const roleConfigs = [
+            { name: '👑 Owner', color: '#9333ea', hoist: true, permissions: [PermissionFlagsBits.Administrator] },
+            { name: '🌟 Fondateur', color: '#7c3aed', hoist: true, permissions: [PermissionFlagsBits.ManageGuild, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles, PermissionFlagsBits.BanMembers, PermissionFlagsBits.KickMembers] },
+            { name: '⭐ Co-Fondateur', color: '#8b5cf6', hoist: true, permissions: [PermissionFlagsBits.ManageGuild, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.BanMembers, PermissionFlagsBits.KickMembers] },
+            { name: '📊 Manager', color: '#a855f7', hoist: true, permissions: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.KickMembers] },
+            { name: '🛡️ Administrateur', color: '#c084fc', hoist: true, permissions: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.KickMembers] },
+            { name: '⚖️ Modérateur', color: '#d946ef', hoist: true, permissions: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.MuteMembers] },
+            { name: '🎧 Support', color: '#ec4899', hoist: false, permissions: [PermissionFlagsBits.ManageMessages] },
+            { name: '🎯 Capitaine', color: '#f472b6', hoist: true, permissions: [] },
+            { name: '⚽ Joueur', color: '#fbbf24', hoist: true, permissions: [] },
+            { name: '👤 Membre', color: '#6b7280', hoist: false, permissions: [] },
+        ];
+
+        serverConfig.roles = {};
+        for (const rc of roleConfigs) {
+            const existing = guild.roles.cache.find(r => r.name === rc.name);
+            if (existing) {
+                serverConfig.roles[rc.name] = existing.id;
+                log('Role déjà existant: ' + rc.name);
+                continue;
+            }
+            try {
+                const role = await guild.roles.create({ name: rc.name, color: rc.color, hoist: rc.hoist, permissions: rc.permissions, reason: 'FTY Club Pro Setup' });
+                serverConfig.roles[rc.name] = role.id;
+                log('Role créé: ' + rc.name);
+            } catch(e) { log('Erreur role ' + rc.name + ': ' + e.message); }
+        }
+
+        // ===== CATÉGORIES =====
+        const categories = [
+            { name: '📋 INFORMATIONS', channels: [
+                { name: '📢・règlement', type: ChannelType.GuildText },
+                { name: '📌・annonces-globales', type: ChannelType.GuildText },
+                { name: '🔗・liens-utiles', type: ChannelType.GuildText },
+            ]},
+            { name: '⚽ MATCHS & SPORT', channels: [
+                { name: '⚽・annonces-matchs', type: ChannelType.GuildText },
+                { name: '🏆・résultats', type: ChannelType.GuildText },
+                { name: '🎯・tactiques', type: ChannelType.GuildText },
+                { name: '📊・statistiques', type: ChannelType.GuildText },
+            ]},
+            { name: '💬 COMMUNAUTÉ', channels: [
+                { name: '💬・général', type: ChannelType.GuildText },
+                { name: '🎮・gaming', type: ChannelType.GuildText },
+                { name: '😂・détente', type: ChannelType.GuildText },
+                { name: '📸・médias', type: ChannelType.GuildText },
+            ]},
+            { name: '🎤 VOCAL', channels: [
+                { name: '🎤 Général', type: ChannelType.GuildVoice },
+                { name: '⚽ Match #1', type: ChannelType.GuildVoice },
+                { name: '⚽ Match #2', type: ChannelType.GuildVoice },
+                { name: '🎧 Support', type: ChannelType.GuildVoice },
+            ]},
+            { name: '🎯 RECRUTEMENT', channels: [
+                { name: '🎯・recrutement', type: ChannelType.GuildText },
+                { name: '📋・candidatures', type: ChannelType.GuildText },
+            ]},
+            { name: '🛡️ STAFF', channels: [
+                { name: '📋・logs-staff', type: ChannelType.GuildText },
+                { name: '💬・staff-chat', type: ChannelType.GuildText },
+                { name: '🎤 Staff', type: ChannelType.GuildVoice },
+            ]},
+            { name: '🎤 CONFÉRENCES', channels: [
+                { name: '🎤・conférences', type: ChannelType.GuildText },
+                { name: '📡 Conférence Live', type: ChannelType.GuildVoice },
+            ]},
+        ];
+
+        serverConfig.channels = {};
+        serverConfig.categories = {};
+
+        for (const cat of categories) {
+            let category = guild.channels.cache.find(c => c.name === cat.name && c.type === ChannelType.GuildCategory);
+            if (!category) {
+                try {
+                    category = await guild.channels.create({ name: cat.name, type: ChannelType.GuildCategory, reason: 'FTY Club Pro Setup' });
+                    log('Catégorie créée: ' + cat.name);
+                } catch(e) { log('Erreur catégorie ' + cat.name + ': ' + e.message); continue; }
+            } else {
+                log('Catégorie déjà existante: ' + cat.name);
+            }
+            serverConfig.categories[cat.name] = category.id;
+
+            for (const ch of cat.channels) {
+                const cleanName = ch.name.replace(/[^a-zA-Z0-9\-·⚽🎤📢📌🔗🏆🎯📊💬🎮😂📸🛡️📋🌟]/g, '').toLowerCase();
+                const existing = guild.channels.cache.find(c => c.name === ch.name && c.parentId === category.id);
+                if (existing) {
+                    serverConfig.channels[ch.name.replace(/[^a-z0-9\-]/gi, '').toLowerCase()] = existing.id;
+                    continue;
+                }
+                try {
+                    const channel = await guild.channels.create({
+                        name: ch.name, type: ch.type,
+                        parent: category.id, reason: 'FTY Club Pro Setup'
+                    });
+                    const key = ch.name.replace(/^[^a-zA-Z]+/, '').replace(/・|#\d+/g, '').trim().toLowerCase().replace(/\s+/g, '-');
+                    serverConfig.channels[key] = channel.id;
+                    log('Salon créé: ' + ch.name);
+                } catch(e) { log('Erreur salon ' + ch.name + ': ' + e.message); }
+            }
+        }
+
+        serverConfig.configured = true;
+        saveServerConfig();
+
+        // Message de fin dans les résultats
+        const summary = `✅ Setup terminé!\n• ${Object.keys(serverConfig.roles).length} rôles\n• ${Object.keys(serverConfig.categories).length} catégories\n• ${Object.keys(serverConfig.channels).length} salons`;
+        addBotLog(summary);
+
+        // Éditer la réponse si possible (< 15 min)
+        try {
+            await interaction.editReply({
+                embeds: [new EmbedBuilder()
+                    .setColor('#22c55e')
+                    .setTitle('✅ Setup FTY Club Pro Terminé !')
+                    .setDescription(summary)
+                    .addFields(
+                        { name: '👑 Rôles créés', value: Object.keys(serverConfig.roles).length + ' rôles', inline: true },
+                        { name: '📂 Catégories', value: Object.keys(serverConfig.categories).length + ' catégories', inline: true },
+                        { name: '💬 Salons', value: Object.keys(serverConfig.channels).length + ' salons', inline: true }
+                    )
+                    .setFooter({ text: 'FTY Club Pro - Setup Automatique' })
+                    .setTimestamp()]
+            });
+        } catch(e) {
+            // Interaction expirée, pas grave - on envoie dans le salon
+            const generalChanId = serverConfig.channels['général'] || serverConfig.channels['general'];
+            if (generalChanId) {
+                const chan = guild.channels.cache.get(generalChanId);
+                if (chan) await chan.send({ content: summary });
+            }
+        }
+
+    } catch(globalErr) {
+        log('Erreur globale setup: ' + globalErr.message);
+        try {
+            await interaction.editReply({ content: '❌ Erreur setup: ' + globalErr.message }).catch(() => {});
+        } catch(e) {}
+    }
+}
 
 // ============================================================
 // ===           API EXPRESS POUR PANEL                     ===
