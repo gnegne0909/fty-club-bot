@@ -1,0 +1,29 @@
+{
+  "name": "fty-club-pro-bot",
+  "version": "3.0.0",
+  "description": "Bot Discord officiel de FTY Club Pro - Hébergé sur Katabump",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "fty",
+    "esport"
+  ],
+  "author": "Xywez",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "express": "^4.18.2",
+    "axios": "^1.6.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
