@@ -1,6 +1,7 @@
 const {
     Client, GatewayIntentBits, EmbedBuilder, PermissionFlagsBits,
-    ChannelType, REST, Routes, ActivityType
+    ChannelType, REST, Routes, ActivityType,
+    ActionRowBuilder, ButtonBuilder, ButtonStyle, Events
 } = require('discord.js');
 const express = require('express');
 const axios = require('axios');
@@ -39,7 +40,7 @@ function readConfig() {
     return {
         configured: false,
         categories: {},
-        channels: { general: null, annonces: null, matchAnnonce: null, sanctions: null, postes: null, logs: null, bienvenue: null, reglement: null, recrutement: null },
+        channels: { general: null, general2: null, general3: null, annonces: null, matchAnnonce: null, sanctions: null, postes: null, logs: null, bienvenue: null, reglement: null, recrutement: null, guide: null, officialAnnonces: null, giveaway: null, updates: null, tickets: null },
         roles: { owner: null, admin: null, moderateur: null, support: null, capitaine: null, joueur: null, membre: null, muted: null },
         antiRaid: { enabled: false, joinThreshold: 10, joinWindow: 10, action: 'kick' },
         antiLink: { enabled: false, whitelist: [], action: 'delete' },
@@ -107,7 +108,12 @@ const SLASH_COMMANDS = [
         description: '⚙️ Configure le serveur Discord (Xywez uniquement)',
         default_member_permissions: String(PermissionFlagsBits.Administrator)
     },
-    { name: 'ticket', description: '🎫 Ouvrir un ticket support en DM' }
+    { name: 'ticket', description: '🎫 Ouvrir un ticket support en DM' },
+    { name: 'reglement', description: '📜 Afficher le règlement du serveur' },
+    { name: 'say', description: '📢 Écrire un message via le bot (staff+)', options: [
+        { type: 3, name: 'message', description: 'Message à envoyer', required: true },
+        { type: 7, name: 'salon', description: 'Salon cible (défaut: actuel)', required: false }
+    ]}
 ];
 
 // ============================================================
@@ -282,15 +288,37 @@ client.on('guildMemberAdd', async member => {
 
     // MESSAGE BIENVENUE
     if (cfg.channels?.bienvenue) {
-        await sendToChannel(cfg.channels.bienvenue, {
-            title: '🎉 Bienvenue !',
-            description: `Bienvenue sur **FTY Club Pro**, ${member.user.tag} !\n\nConsulte le règlement et présente-toi !`,
-            color: 0x9333ea,
-            thumbnail: { url: member.user.displayAvatarURL({ dynamic: true }) },
-            timestamp: new Date().toISOString(),
-            footer: { text: `FTY Club Pro | Membre #${member.guild.memberCount}` }
-        });
+        const welcomeEmbed = new EmbedBuilder()
+            .setTitle('🎉 Bienvenue sur FTY Club Pro !')
+            .setDescription(`Bienvenue <@${member.id}> sur le serveur officiel **FTY Club Pro** !\n\n📜 **Lis le règlement** avant de commencer !\n🎫 **Ouvre un ticket** si tu as besoin d'aide.\n🌐 **Visite le site** : https://fty-club-pro-1.onrender.com`)
+            .setColor(0x9333ea)
+            .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+            .addFields(
+                { name: '👤 Membre', value: member.user.tag, inline: true },
+                { name: '📅 Rejoint le', value: `<t:${Math.floor(Date.now()/1000)}:F>`, inline: true },
+                { name: '🎮 Compte créé', value: `<t:${Math.floor(member.user.createdAt.getTime()/1000)}:R>`, inline: true }
+            )
+            .setTimestamp()
+            .setFooter({ text: `FTY Club Pro | Membre #${member.guild.memberCount}` });
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setLabel('📜 Règlement').setStyle(ButtonStyle.Link).setURL(`https://discord.com/channels/${GUILD_ID}/${cfg.channels.reglement||member.guild.id}`),
+            new ButtonBuilder().setLabel('🌐 Site Web').setStyle(ButtonStyle.Link).setURL('https://fty-club-pro-1.onrender.com'),
+            new ButtonBuilder().setLabel('🎯 Candidature').setStyle(ButtonStyle.Link).setURL('https://fty-club-pro-1.onrender.com/candidature')
+        );
+        try {
+            const ch = await client.channels.fetch(cfg.channels.bienvenue);
+            await ch.send({ embeds: [welcomeEmbed], components: [row] });
+        } catch(e) {}
     }
+
+    // DM de bienvenue au nouveau membre
+    await sendDiscordDM(member.id, {
+        title: '👋 Bienvenue sur FTY Club Pro !',
+        description: `Salut **${member.user.username}** !\n\nTu viens de rejoindre le serveur **FTY Club Pro**. Voici quelques infos :\n\n📜 **Règlement** : Lis-le attentivement dans le serveur\n🎫 **Support** : Utilise \`/ticket\` pour contacter le staff\n🌐 **Site web** : https://fty-club-pro-1.onrender.com\n🎯 **Candidature** : https://fty-club-pro-1.onrender.com/candidature\n\nBonne aventure ! ⚽`,
+        color: 0x9333ea,
+        timestamp: new Date().toISOString(),
+        footer: { text: 'FTY Club Pro | Bienvenue' }
+    });
 });
 
 // ============================================================
@@ -405,13 +433,26 @@ client.on('interactionCreate', async interaction => {
             // 2. CATÉGORIES + SALONS
             const cats = [
                 { key: 'info', name: '📋 INFORMATIONS', channels: [
-                    { key: 'annonces', name: '📢・annonces' }, { key: 'reglement', name: '📜・règlement' }, { key: 'recrutement', name: '🎯・recrutement' }
+                    { key: 'annonces', name: '📢・annonces' },
+                    { key: 'officialAnnonces', name: '🏛️・annonces-officielles' },
+                    { key: 'guide', name: '📖・guide' },
+                    { key: 'reglement', name: '📜・règlement' },
+                    { key: 'giveaway', name: '🎁・giveaway' },
+                    { key: 'recrutement', name: '🎯・recrutement' }
                 ]},
                 { key: 'general_cat', name: '💬 GÉNÉRAL', channels: [
-                    { key: 'general', name: '💬・général' }, { key: 'bienvenue', name: '👋・bienvenue' }
+                    { key: 'general', name: '💬・général' },
+                    { key: 'general2', name: '🗣️・discussion' },
+                    { key: 'general3', name: '🎮・off-topic' },
+                    { key: 'bienvenue', name: '👋・bienvenue' }
                 ]},
                 { key: 'compe_cat', name: '⚽ COMPÉTITION', channels: [
-                    { key: 'matchAnnonce', name: '⚽・annonces-matchs' }, { key: 'postes', name: '🎯・postes-rôles' }
+                    { key: 'matchAnnonce', name: '⚽・annonces-matchs' },
+                    { key: 'postes', name: '🎯・postes-rôles' },
+                    { key: 'updates', name: '🔄・mises-à-jour' }
+                ]},
+                { key: 'support_cat', name: '🎫 SUPPORT', channels: [
+                    { key: 'tickets', name: '🎫・tickets' }
                 ]},
                 { key: 'staff_cat', name: '⚙️ STAFF', channels: [
                     { key: 'sanctions', name: '⚠️・sanctions' }, { key: 'logs', name: '📊・logs-bot' }
@@ -442,6 +483,51 @@ client.on('interactionCreate', async interaction => {
             cfg.configured = true;
             writeConfig(cfg);
             await sendToPanel('configUpdate', cfg);
+
+            // 4. EMBED RÈGLEMENT avec bouton à cocher
+            if (cfg.channels.reglement) {
+                const reglementEmbed = new EmbedBuilder()
+                    .setTitle('📜 RÈGLEMENT — FTY Club Pro')
+                    .setDescription('Bienvenue sur **FTY Club Pro** ! Veuillez lire et accepter le règlement ci-dessous pour accéder au serveur.\n\n**En cliquant sur ✅ Accepter, vous confirmez avoir lu et accepté toutes les règles.**')
+                    .addFields(
+                        { name: '1️⃣ Respect', value: 'Soyez respectueux envers tous les membres. Le harcèlement, les insultes et la discrimination sont interdits.', inline: false },
+                        { name: '2️⃣ Spam', value: 'Aucun spam, flood ou messages répétitifs. Utilisez les salons appropriés.', inline: false },
+                        { name: '3️⃣ Publicité', value: 'Toute publicité non autorisée est interdite.', inline: false },
+                        { name: '4️⃣ Contenu', value: 'Aucun contenu NSFW, illégal ou choquant.', inline: false },
+                        { name: '5️⃣ Staff', value: 'Respectez les décisions du staff. En cas de litige, ouvrez un ticket.', inline: false },
+                        { name: '6️⃣ Discord ToS', value: 'Respectez les conditions d\'utilisation de Discord.', inline: false },
+                        { name: '⚠️ Sanctions', value: 'Avertissement → Mute → Kick → Ban selon la gravité.', inline: false }
+                    )
+                    .setColor(0x9333ea)
+                    .setTimestamp()
+                    .setFooter({ text: 'FTY Club Pro | Règlement Officiel — Cliquez ✅ pour accepter' });
+                const reglRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('accept_reglement').setLabel('✅ J\'accepte le règlement').setStyle(ButtonStyle.Success),
+                    new ButtonBuilder().setLabel('🌐 Site Web').setStyle(ButtonStyle.Link).setURL('https://fty-club-pro-1.onrender.com')
+                );
+                try {
+                    const reglChan = await client.channels.fetch(cfg.channels.reglement);
+                    await reglChan.send({ embeds: [reglementEmbed], components: [reglRow] });
+                } catch(e) {}
+            }
+
+            // 5. EMBED TICKET dans le salon tickets
+            if (cfg.channels.tickets) {
+                const ticketEmbed = new EmbedBuilder()
+                    .setTitle('🎫 Support — FTY Club Pro')
+                    .setDescription('Besoin d\'aide ? Tu as une question ou un problème ?\n\n**Comment créer un ticket :**\n\n> 1️⃣ Clique sur le bouton **Créer un ticket** ci-dessous\n> 2️⃣ Utilise la commande `/ticket` dans n\'importe quel salon\n> 3️⃣ Un membre du staff te répondra directement en **DM Discord**\n\n📌 **Règles des tickets :**\n- Un seul ticket ouvert à la fois\n- Sois précis dans ta demande\n- Respecte le staff\n\n⏱️ Temps de réponse moyen : **quelques minutes à quelques heures**')
+                    .setColor(0x9333ea)
+                    .setTimestamp()
+                    .setFooter({ text: 'FTY Club Pro | Support' });
+                const tickRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('create_ticket').setLabel('🎫 Créer un ticket').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setLabel('📖 Guide').setStyle(ButtonStyle.Link).setURL('https://fty-club-pro-1.onrender.com/guide')
+                );
+                try {
+                    const tickChan = await client.channels.fetch(cfg.channels.tickets);
+                    await tickChan.send({ embeds: [ticketEmbed], components: [tickRow] });
+                } catch(e) {}
+            }
 
             // 4. Log dans salon
             if (cfg.channels.logs) await sendToChannel(cfg.channels.logs, {
@@ -516,6 +602,39 @@ client.on('interactionCreate', async interaction => {
             });
         }
 
+        // ── /reglement ─────────────────────────────────────────
+        else if (commandName === 'reglement') {
+            const cfg = readConfig();
+            await interaction.editReply({
+                embeds: [new EmbedBuilder()
+                    .setTitle('📜 Règlement FTY Club Pro')
+                    .setDescription('Voici les règles principales du serveur FTY Club Pro :\n\n1️⃣ **Respect** — Soyez respectueux envers tous les membres.\n2️⃣ **Spam** — Aucun spam ou flood.\n3️⃣ **Publicité** — Toute publicité non autorisée est interdite.\n4️⃣ **Contenu** — Aucun contenu NSFW ou illégal.\n5️⃣ **Staff** — Respectez les décisions du staff.\n6️⃣ **Discord ToS** — Respectez les CGU Discord.\n\n⚠️ **Sanctions** : Avertissement → Mute → Kick → Ban')
+                    .setColor(0x9333ea)
+                    .setTimestamp()
+                    .setFooter({ text: 'FTY Club Pro | Règlement' })]
+            });
+        }
+
+        // ── /say ───────────────────────────────────────────────
+        else if (commandName === 'say') {
+            const cfg = readConfig();
+            const allowedRoles = [cfg.roles?.owner, cfg.roles?.admin, cfg.roles?.moderateur, cfg.roles?.support].filter(Boolean);
+            const member = interaction.member;
+            const hasPermission = user.id === SUPER_ADMIN_DISCORD_ID || member?.permissions.has(PermissionFlagsBits.ManageMessages) || allowedRoles.some(r => member?.roles?.cache?.has(r));
+            if (!hasPermission) {
+                return await interaction.editReply({ content: '❌ Vous n\'avez pas la permission d\'utiliser cette commande.' });
+            }
+            const message = interaction.options.getString('message');
+            const targetChannel = interaction.options.getChannel('salon') || interaction.channel;
+            try {
+                await targetChannel.send({ content: message });
+                await interaction.editReply({ content: `✅ Message envoyé dans <#${targetChannel.id}>` });
+                addBotLog(`📢 /say par ${user.tag} → #${targetChannel.name}: ${message.substring(0,50)}`, 'discord');
+            } catch(e) {
+                await interaction.editReply({ content: `❌ Impossible d'envoyer dans ce salon: ${e.message}` });
+            }
+        }
+
     } catch (err) {
         console.error(`❌ Erreur /${commandName}:`, err);
         addBotLog(`❌ Erreur /${commandName}: ${err.message}`, 'error');
@@ -524,8 +643,49 @@ client.on('interactionCreate', async interaction => {
 });
 
 // ============================================================
-// ===           API EXPRESS (Panel → Bot)                 ===
+// ===           BOUTONS DISCORD (règlement, ticket)        ===
 // ============================================================
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isButton()) return;
+    const { customId, user } = interaction;
+    const cfg = readConfig();
+
+    // ✅ Bouton accepter règlement
+    if (customId === 'accept_reglement') {
+        try {
+            if (cfg.roles?.membre) {
+                const guild = client.guilds.cache.get(GUILD_ID);
+                const guildMember = await guild?.members.fetch(user.id).catch(()=>null);
+                if (guildMember && !guildMember.roles.cache.has(cfg.roles.membre)) {
+                    await guildMember.roles.add(cfg.roles.membre).catch(()=>{});
+                }
+            }
+            await interaction.reply({ content: '✅ **Règlement accepté !** Tu as maintenant accès au serveur. Bienvenue sur **FTY Club Pro** ! 🎉', ephemeral: true });
+            addBotLog(`📜 Règlement accepté par ${user.tag}`, 'discord');
+        } catch(e) {
+            try { await interaction.reply({ content: '❌ Erreur lors de l\'acceptation.', ephemeral: true }); } catch(_) {}
+        }
+    }
+
+    // 🎫 Bouton créer ticket depuis le salon
+    else if (customId === 'create_ticket') {
+        const tickets = readTickets();
+        const existing = Object.values(tickets).find(t => t.userId === user.id && t.status === 'open');
+        if (existing) return await interaction.reply({ content: `❌ Tu as déjà un ticket ouvert (\`${existing.id}\`). Vérifie tes DMs.`, ephemeral: true });
+        const ticketId = `t_${Date.now()}`;
+        const newTicket = { id: ticketId, userId: user.id, userTag: user.tag, discordId: user.id, status: 'open', createdAt: new Date().toISOString(), messages: [], sujet: 'Ticket Support', claimedBy: null };
+        tickets[ticketId] = newTicket;
+        writeTickets(tickets);
+        const dmOk = await sendDiscordDM(user.id, { title: '🎫 Ticket Ouvert - FTY Club Pro', description: `Ton ticket a bien été ouvert !\n\n**ID:** \`${ticketId}\`\n\nUn membre du staff va te répondre ici directement en DM.`, color: 0x9333ea, timestamp: new Date().toISOString(), footer: { text: 'FTY Club Pro | Support' } });
+        if (!dmOk) { delete tickets[ticketId]; writeTickets(tickets); return await interaction.reply({ content: '❌ Tes DMs sont fermés. Active-les dans Paramètres → Confidentialité.', ephemeral: true }); }
+        await sendToPanel('newTicket', newTicket);
+        if (cfg.channels?.logs) await sendToChannel(cfg.channels.logs, { title: '🎫 Nouveau Ticket', description: `**Membre:** ${user.tag} (${user.id})\n**ID:** \`${ticketId}\``, color: 0x9333ea, timestamp: new Date().toISOString(), footer: { text: 'FTY Club Pro | Tickets' } });
+        addBotLog(`🎫 Ticket ouvert via bouton: ${ticketId} par ${user.tag}`, 'discord');
+        await interaction.reply({ content: `✅ Ticket \`${ticketId}\` ouvert ! Vérifie tes **messages privés** 📨`, ephemeral: true });
+    }
+});
+
+
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 
@@ -799,8 +959,81 @@ app.get('/api/guild-roles', verifyApiKey, async (req, res) => {
 });
 
 // GET / et /health
-app.get('/', (req, res) => res.json({ status: 'ok', bot: 'FTY Club Pro V4.0', botReady: botStatus.isReady, maintenance: botStatus.maintenanceMode, guilds: botStatus.guilds, members: botStatus.members }));
+app.get('/', (req, res) => res.json({ status: 'ok', bot: 'FTY Club Pro V5.0', botReady: botStatus.isReady, maintenance: botStatus.maintenanceMode, guilds: botStatus.guilds, members: botStatus.members }));
 app.get('/health', (req, res) => res.json({ status: 'ok', botReady: botStatus.isReady, uptime: Date.now() - botStatus.uptime, panelConnected: botStatus.panelConnected }));
+
+// POST /api/send-message — Écrire un message avec le bot depuis le panel
+app.post('/api/send-message', verifyApiKey, async (req, res) => {
+    const { channelId, message, embed, author } = req.body;
+    if (!channelId || (!message && !embed)) return res.status(400).json({ error: 'channelId + message ou embed requis' });
+    try {
+        const channel = await client.channels.fetch(channelId);
+        const opts = {};
+        if (embed) {
+            opts.embeds = [new EmbedBuilder(embed)];
+        } else {
+            opts.content = message;
+        }
+        await channel.send(opts);
+        addBotLog(`📢 Message bot envoyé dans #${channel.name} par ${author||'panel'}`, 'success');
+        res.json({ success: true });
+    } catch (e) {
+        addBotLog(`❌ send-message: ${e.message}`, 'error');
+        res.json({ success: false, error: e.message });
+    }
+});
+
+// POST /api/patch-notes — Poster des patch notes dans le salon mises-à-jour
+app.post('/api/patch-notes', verifyApiKey, async (req, res) => {
+    const { version, title, changes, author } = req.body;
+    const cfg = readConfig();
+    if (!cfg.channels?.updates) return res.json({ success: false, error: 'Salon mises-à-jour non configuré. Lance /setup.' });
+    const changesText = Array.isArray(changes) ? changes.map((c, i) => `${i+1}. ${c}`).join('\n') : (changes || 'Améliorations générales');
+    const ok = await sendToChannel(cfg.channels.updates, {
+        title: `🔄 Mise à jour ${version || ''} — FTY Club Pro`,
+        description: `**${title || 'Nouvelles Mises à Jour'}**\n\n${changesText}`,
+        color: 0x3b82f6,
+        timestamp: new Date().toISOString(),
+        footer: { text: `FTY Club Pro | Patch Notes${author ? ` | Par ${author}` : ''}` }
+    });
+    addBotLog(`🔄 Patch notes v${version} publiés par ${author||'panel'}`, 'success');
+    res.json({ success: ok });
+});
+
+// POST /api/nuke-all — DANGER: Nuke complet (Xywez uniquement)
+app.post('/api/nuke-all', verifyApiKey, async (req, res) => {
+    const { xywezId, confirm } = req.body;
+    if (xywezId !== SUPER_ADMIN_DISCORD_ID || confirm !== 'NUKE_CONFIRM_FTY_2026') {
+        return res.status(403).json({ error: 'Action non autorisée. Réservé à Xywez uniquement avec confirmation.' });
+    }
+    addBotLog('☢️ NUKE ALL initié par Xywez', 'error');
+    try {
+        const guild = client.guilds.cache.get(GUILD_ID);
+        if (!guild) return res.json({ success: false, error: 'Serveur introuvable' });
+        // Supprimer tous les salons
+        const channels = [...guild.channels.cache.values()];
+        for (const ch of channels) {
+            await ch.delete('Nuke All by Xywez').catch(()=>{});
+        }
+        // Supprimer tous les rôles (sauf @everyone et les rôles system)
+        const roles = [...guild.roles.cache.values()].filter(r => !r.managed && r.name !== '@everyone' && r.position < guild.members.me.roles.highest.position);
+        for (const r of roles) {
+            await r.delete('Nuke All by Xywez').catch(()=>{});
+        }
+        // Reset la config locale
+        const emptyConfig = { configured: false, categories: {}, channels: { general: null, annonces: null, matchAnnonce: null, sanctions: null, postes: null, logs: null, bienvenue: null, reglement: null, recrutement: null, guide: null, officialAnnonces: null, giveaway: null, updates: null, tickets: null }, roles: { owner: null, admin: null, moderateur: null, support: null, capitaine: null, joueur: null, membre: null, muted: null }, antiRaid: { enabled: false }, antiLink: { enabled: false }, antiDouble: { enabled: false } };
+        writeConfig(emptyConfig);
+        const emptyTickets = {};
+        writeTickets(emptyTickets);
+        // Notifier le panel de reset la DB
+        await sendToPanel('nukeReset', { by: 'Xywez', timestamp: new Date().toISOString() });
+        addBotLog('☢️ NUKE ALL terminé — Server + Config reset', 'error');
+        res.json({ success: true, message: 'Nuke complet effectué. Lance /setup pour reconfigurer.' });
+    } catch(e) {
+        addBotLog(`❌ Nuke all error: ${e.message}`, 'error');
+        res.json({ success: false, error: e.message });
+    }
+});
 
 // ============================================================
 // ===           ERREURS DISCORD                            ===
